@@ -57,79 +57,94 @@ exports.handler = async (event) => {
     const userRef = db.collection('users').doc(userId);
 
     await db.runTransaction(async (transaction) => {
+      // ==========================================
+      // 1. FASE DE LEITURA (READS) - OBRIGATÓRIO NO TOPO
+      // ==========================================
       const userSnap = await transaction.get(userRef);
       if (!userSnap.exists) throw new Error("Usuário não existe");
+      const userData = userSnap.data();
 
-      // 1. Atualiza o status do depósito principal
+      let ref1Snap = null;
+      let ref2Snap = null;
+      let ref1Ref = null;
+      let ref2Ref = null;
+
+      // Busca dados do Afiliado Nível 1
+      if (userData.referredBy) {
+        ref1Ref = db.collection('users').doc(userData.referredBy);
+        ref1Snap = await transaction.get(ref1Ref);
+        
+        // Busca dados do Afiliado Nível 2 (Avô)
+        if (ref1Snap.exists) {
+          const ref1Data = ref1Snap.data();
+          if (ref1Data.referredBy) {
+            ref2Ref = db.collection('users').doc(ref1Data.referredBy);
+            ref2Snap = await transaction.get(ref2Ref);
+          }
+        }
+      }
+
+      // ==========================================
+      // 2. FASE DE ESCRITA (WRITES) - OBRIGATÓRIO NO FINAL
+      // ==========================================
+      
+      // Atualiza o status do depósito principal
       transaction.update(depositDoc.ref, { 
         status: 'completed',
         paidAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // 2. Adiciona saldo ao usuário
+      // Adiciona saldo ao usuário
       transaction.update(userRef, {
         balance: admin.firestore.FieldValue.increment(parsedAmount),
         totalDeposited: admin.firestore.FieldValue.increment(parsedAmount)
       });
 
-      // 3. REGISTRO NA SUBCOLEÇÃO TRANSACTIONS (O que você pediu)
+      // REGISTRO NA SUBCOLEÇÃO TRANSACTIONS
       const userTransRef = userRef.collection('transactions').doc(transactionId);
       transaction.set(userTransRef, {
-        amount: parsedAmount, // Essencial para somar nos ganhos
+        amount: parsedAmount,
         status: 'completed',
         type: 'deposit',
         description: 'Depósito via PIX (Confirmado)',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(), // Essencial para o filtro de "Hoje"
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
         paidAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // --- LÓGICA DE COMISSÕES DE AFILIADOS ---
-      const userData = userSnap.data();
-      if (userData.referredBy) {
-        const ref1Ref = db.collection('users').doc(userData.referredBy);
-        const ref1Snap = await transaction.get(ref1Ref);
+      // Lógica de Comissões de Afiliados (Nível 1)
+      if (ref1Snap && ref1Snap.exists) {
+        const bonus1 = parsedAmount * 0.10;
+        transaction.update(ref1Ref, {
+          balance: admin.firestore.FieldValue.increment(bonus1),
+          totalCommissions: admin.firestore.FieldValue.increment(bonus1)
+        });
 
-        if (ref1Snap.exists) {
-          // Nível 1: 10%
-          const bonus1 = parsedAmount * 0.10;
-          transaction.update(ref1Ref, {
-            balance: admin.firestore.FieldValue.increment(bonus1),
-            totalCommissions: admin.firestore.FieldValue.increment(bonus1)
-          });
+        const ref1TransRef = ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`);
+        transaction.set(ref1TransRef, {
+          amount: bonus1,
+          status: 'completed',
+          type: 'commission',
+          description: `Indicação Nível 1: ${userName || 'Usuário'}`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
 
-          const ref1TransRef = ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`);
-          transaction.set(ref1TransRef, {
-            amount: bonus1,
-            status: 'completed',
-            type: 'commission',
-            description: `Indicação Nível 1: ${userName || 'Usuário'}`,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
-          });
+      // Lógica de Comissões de Afiliados (Nível 2)
+      if (ref2Snap && ref2Snap.exists) {
+        const bonus2 = parsedAmount * 0.05;
+        transaction.update(ref2Ref, {
+          balance: admin.firestore.FieldValue.increment(bonus2),
+          totalCommissions: admin.firestore.FieldValue.increment(bonus2)
+        });
 
-          // Nível 2: 5% (Se existir o avô)
-          const ref1Data = ref1Snap.data();
-          if (ref1Data.referredBy) {
-            const ref2Ref = db.collection('users').doc(ref1Data.referredBy);
-            const ref2Snap = await transaction.get(ref2Ref);
-            
-            if (ref2Snap.exists) {
-              const bonus2 = parsedAmount * 0.05;
-              transaction.update(ref2Ref, {
-                balance: admin.firestore.FieldValue.increment(bonus2),
-                totalCommissions: admin.firestore.FieldValue.increment(bonus2)
-              });
-
-              const ref2TransRef = ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`);
-              transaction.set(ref2TransRef, {
-                amount: bonus2,
-                status: 'completed',
-                type: 'commission',
-                description: `Indicação Nível 2: ${userName || 'Usuário'}`,
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
-              });
-            }
-          }
-        }
+        const ref2TransRef = ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`);
+        transaction.set(ref2TransRef, {
+          amount: bonus2,
+          status: 'completed',
+          type: 'commission',
+          description: `Indicação Nível 2: ${userName || 'Usuário'}`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
       }
     });
 
