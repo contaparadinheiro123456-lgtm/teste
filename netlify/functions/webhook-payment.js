@@ -73,13 +73,26 @@ exports.handler = async (event) => {
       }
 
       // 2. ESCRITAS (WRITES)
+      // 1. Atualizar o depósito global
       transaction.update(depositRef, { status: 'approved', paidAt: admin.firestore.FieldValue.serverTimestamp() });
+      
+      // 2. Atualizar o saldo do usuário
       transaction.update(userRef, { balance: admin.firestore.FieldValue.increment(parsedAmount) });
 
+      // 3. ATUALIZAR O HISTÓRICO (O que aparece na sua tela do print)
+      const userTransRef = userRef.collection('transactions').doc(transactionId);
+      transaction.set(userTransRef, {
+        status: 'completed',
+        description: 'Depósito via PIX (Confirmado)',
+        paidAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      // Atualiza status do convite (se houver)
       if (!inviteSnap.empty) {
         transaction.update(inviteSnap.docs[0].ref, { status: 'completed' });
       }
 
+      // Distribuição de Comissões (Níveis 1 a 3)
       if (ref1Snap?.exists) {
         const bonus1 = parsedAmount * 0.20;
         transaction.update(ref1Snap.ref, {
