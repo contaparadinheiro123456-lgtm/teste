@@ -101,7 +101,9 @@ exports.handler = async (event) => {
     // 5. Link da Imagem QR Code
     const qrImage = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(brCode)}`;
     
-    // 6. Salvar no Firestore com status pendente
+// ... (mantenha o início igual)
+
+    // 6. Salvar no Firestore (Coleção Global de Depósitos)
     await depositRef.set({
       userId: userId,
       userName: userName, 
@@ -114,6 +116,24 @@ exports.handler = async (event) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
+    // --- NOVA PARTE: Criar no Histórico do Usuário ---
+    const userTransactionRef = db.collection('users').doc(userId).collection('transactions').doc(transactionId);
+    await userTransactionRef.set({
+      type: 'deposit',
+      amount: parseFloat(amount),
+      status: 'pending',
+      description: 'Depósito via PIX (Pendente)',
+      transactionId: transactionId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    // ------------------------------------------------
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ success: true, pixCode: brCode, qrImage: qrImage, transactionId: transactionId })
+    };
+// ...
     // 7. Retorno para o Frontend
     return {
       statusCode: 200,
