@@ -6,7 +6,7 @@ if (!admin.apps.length) {
     credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: privateKey.replace(/\\n/g, '\n')
+      privateKey: privateKey ? privateKey.replace(/\\n/g, '\n') : undefined
     })
   });
 }
@@ -15,10 +15,11 @@ const db = admin.firestore();
 
 exports.handler = async (event) => {
   try {
+    // Pega o userId que agora estamos enviando na URL pelo Frontend
     const { userId } = event.queryStringParameters || {};
 
     if (!userId) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'userId é obrigatório' }) };
+      return { statusCode: 400, body: JSON.stringify({ error: 'userId é obrigatório na URL' }) };
     }
 
     // 1. Definir o início do dia de hoje (00:00:00)
@@ -26,7 +27,7 @@ exports.handler = async (event) => {
     startOfDay.setHours(0, 0, 0, 0);
     const startTimestamp = admin.firestore.Timestamp.fromDate(startOfDay);
 
-    // 2. Buscar Ganhos de Hoje (Soma das transações 'deposit' e 'commission')
+    // 2. Buscar Ganhos de Hoje
     const statsQuery = await db.collection('users').doc(userId)
       .collection('transactions')
       .where('createdAt', '>=', startTimestamp)
@@ -36,8 +37,11 @@ exports.handler = async (event) => {
     let todayEarnings = 0;
     statsQuery.forEach(doc => {
       const data = doc.data();
-      // Soma apenas se for depósito ou comissão
-      if (data.type === 'deposit' || data.type === 'commission') {
+      
+      // ADAPTADO: Agora ele aceita mais tipos de transações para somar o saldo do dia
+      const validTypes = ['deposit', 'commission', 'indication', 'referral'];
+      
+      if (validTypes.includes(data.type)) {
         todayEarnings += Number(data.amount || 0);
       }
     });
