@@ -1,3 +1,6 @@
+// ========================================
+// NETLIFY FUNCTION: Webhook Pagamentos (EvoPay)
+// ========================================
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
@@ -16,13 +19,17 @@ if (!admin.apps.length) {
 const db = admin.apps.length ? admin.firestore() : null;
 
 exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Método não permitido' };
+
   try {
     if (!db) throw new Error("Banco de dados não conectado.");
 
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const transactionId = body.id || body.reference || (event.queryStringParameters ? event.queryStringParameters.id : null);
+    
+    // Na EvoPay, você enviou o transactionId como 'reference'
+    const transactionId = body.reference || body.id || (event.queryStringParameters ? event.queryStringParameters.id : null);
 
-    if (!transactionId) return { statusCode: 400, body: JSON.stringify({ error: 'ID ausente' }) };
+    if (!transactionId) return { statusCode: 400, body: JSON.stringify({ error: 'ID/Reference ausente no webhook' }) };
 
     const statusCeto = String(body.status).toUpperCase();
     const isPaid = statusCeto === 'PAID' || statusCeto === 'COMPLETED' || body.success === true;
@@ -33,23 +40,21 @@ exports.handler = async (event) => {
     const depositDoc = await depositRef.get();
 
     if (!depositDoc.exists || depositDoc.data().status === 'approved') {
-      return { statusCode: 200, body: JSON.stringify({ message: 'Já processado ou não encontrado' }) };
+      return { statusCode: 200, body: JSON.stringify({ message: 'Depósito já processado ou não encontrado' }) };
     }
 
     const { userId, amount } = depositDoc.data();
+    const parsedAmount = parseFloat(amount);
     const userRef = db.collection('users').doc(userId);
 
     await db.runTransaction(async (transaction) => {
-      // --- 1. TODAS AS LEITURAS (READS) PRIMEIRO ---
-      
+      // 1. LEITURAS (READS)
       const userSnap = await transaction.get(userRef);
       if (!userSnap.exists) throw new Error(`Usuário não existe: ${userId}`);
 
-      // Leitura do Convite
       const inviteQuery = db.collection('invites').where('invitedId', '==', userId).where('status', '==', 'pending').limit(1);
       const inviteSnap = await transaction.get(inviteQuery);
 
-      // Leitura dos Padrinhos (Cadeia de 3 níveis)
       let ref1Snap, ref2Snap, ref3Snap;
       let ref1Id = userSnap.data().referredBy;
       
@@ -67,34 +72,30 @@ exports.handler = async (event) => {
         }
       }
 
-      // --- 2. TODAS AS ESCRITAS (WRITES) DEPOIS ---
-
-      // Atualiza depósito e saldo do jogador
+      // 2. ESCRITAS (WRITES)
       transaction.update(depositRef, { status: 'approved', paidAt: admin.firestore.FieldValue.serverTimestamp() });
-      transaction.update(userRef, { balance: admin.firestore.FieldValue.increment(Number(amount)) });
+      transaction.update(userRef, { balance: admin.firestore.FieldValue.increment(parsedAmount) });
 
-      // Atualiza convite
       if (!inviteSnap.empty) {
         transaction.update(inviteSnap.docs[0].ref, { status: 'completed' });
       }
 
-      // Distribui comissões
       if (ref1Snap?.exists) {
-        const bonus1 = Number(amount) * 0.20;
+        const bonus1 = parsedAmount * 0.20;
         transaction.update(ref1Snap.ref, {
           balance: admin.firestore.FieldValue.increment(bonus1),
           totalCommissions: admin.firestore.FieldValue.increment(bonus1)
         });
         
         if (ref2Snap?.exists) {
-          const bonus2 = Number(amount) * 0.05;
+          const bonus2 = parsedAmount * 0.05;
           transaction.update(ref2Snap.ref, {
             balance: admin.firestore.FieldValue.increment(bonus2),
             totalCommissions: admin.firestore.FieldValue.increment(bonus2)
           });
 
           if (ref3Snap?.exists) {
-            const bonus3 = Number(amount) * 0.01;
+            const bonus3 = parsedAmount * 0.01;
             transaction.update(ref3Snap.ref, {
               balance: admin.firestore.FieldValue.increment(bonus3),
               totalCommissions: admin.firestore.FieldValue.increment(bonus3)
@@ -106,7 +107,7 @@ exports.handler = async (event) => {
 
     return { statusCode: 200, body: JSON.stringify({ success: true, message: 'Processado com sucesso' }) };
   } catch (error) {
-    console.error("Erro no processamento:", error);
+    console.error("Erro no webhook:", error);
     return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
   }
 };
