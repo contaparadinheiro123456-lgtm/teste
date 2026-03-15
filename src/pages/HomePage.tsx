@@ -8,56 +8,68 @@ import { TrendingUp, Users, Wallet } from 'lucide-react';
 export default function HomePage() {
   const { user, token } = useAuth();
   const [stats, setStats] = useState({ todayEarnings: 0, newInvites: 0 });
+  const [currentBalance, setCurrentBalance] = useState(0); // Estado para o saldo vivo
   const [loading, setLoading] = useState(true);
 
+  // Efeito para carregar os dados ao abrir e atualizar periodicamente
   useEffect(() => {
-    fetchStats();
-  }, []);
+    if (user?.uid) {
+      fetchStats(); // Carrega imediatamente
 
-const fetchStats = async () => {
-  if (!user?.uid) return; // Garante que temos o ID do usuário
+      // Configura a atualização automática a cada 15 segundos
+      const interval = setInterval(() => {
+        fetchStats();
+      }, 15000);
 
-  try {
-    // Agora enviando o userId na URL para evitar o erro 400
-    const response = await fetch(`/.netlify/functions/stats-today?userId=${user.uid}`, {
-      headers: { 
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
+      return () => clearInterval(interval); // Limpa ao sair da tela
+    }
+  }, [user]);
 
-    if (response.ok) {
-      const data = await response.json();
-      setStats({
-        todayEarnings: data.todayEarnings || 0,
-        newInvites: data.newInvites || 0
+  const fetchStats = async () => {
+    if (!user?.uid) return;
+
+    try {
+      // Enviando o userId na URL para corrigir o erro 400 visto no console
+      const response = await fetch(`/.netlify/functions/stats-today?userId=${user.uid}`, {
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
       });
-      
-      // DICA: Se quiser atualizar o saldo de R$ 5909.00 aqui também,
-      // precisaremos adicionar o campo 'balance' na resposta do backend.
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Atualiza os ganhos e convidados
+        setStats({
+          todayEarnings: data.todayEarnings || 0,
+          newInvites: data.newInvites || 0
+        });
+
+        // Se o seu backend também retornar o saldo atualizado, usamos ele aqui
+        if (data.balance !== undefined) {
+          setCurrentBalance(data.balance);
+        } else {
+          // Caso contrário, usamos o saldo do contexto de autenticação
+          setCurrentBalance(Number(user?.balance) || 0);
+        }
+      } else {
+        console.error('Falha ao buscar estatísticas. Status:', response.status);
+      }
+    } catch (err) {
+      console.error('Error fetching stats:', err);
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    console.error('Erro ao buscar stats:', err);
-  }
-};
-    } else {
-      console.error('Erro na API:', response.status);
-      setStats({ todayEarnings: 0, newInvites: 0 });
-    }
-  } catch (err) {
-    console.error('Erro de conexão:', err);
-    setStats({ todayEarnings: 0, newInvites: 0 });
-  } finally {
-    setLoading(false);
-  }
-};
+  };
+
   const getUserInitial = () => {
     return user?.email?.charAt(0).toUpperCase() || 'M';
   };
 
   return (
     <div className="space-y-6 pb-6 animate-fade-in">
-      {/* Welcome Header */}
+      {/* Header com Saudação */}
       <div className="flex items-center justify-between animate-slide-down">
         <div>
           <p className="text-gray-400 text-sm">Bem-vindo de volta</p>
@@ -70,7 +82,7 @@ const fetchStats = async () => {
         </div>
       </div>
 
-      {/* Stats Cards */}
+      {/* Cards de Ganhos e Convidados */}
       <div className="grid grid-cols-2 gap-3">
         <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#1a1a1a] animate-fade-in">
           <CardContent className="pt-4">
@@ -99,7 +111,7 @@ const fetchStats = async () => {
         </Card>
       </div>
 
-      {/* Balance Card */}
+      {/* Card de Saldo Atualizado */}
       <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#22c55e]/30 animate-fade-in">
         <CardContent className="pt-5 pb-5">
           <div className="flex items-center gap-2 mb-2">
@@ -107,7 +119,7 @@ const fetchStats = async () => {
             <span className="text-gray-400 text-sm">Saldo Disponível</span>
           </div>
           <p className="text-3xl font-extrabold text-white mb-3">
-            R$ {(Number(user?.balance) || 0).toFixed(2)}
+            R$ {currentBalance.toFixed(2)}
           </p>
           <div className="pt-3 border-t border-[#1a1a1a]">
             <div className="flex justify-between text-sm">
@@ -128,7 +140,7 @@ const fetchStats = async () => {
         </CardContent>
       </Card>
 
-      {/* Roulette */}
+      {/* Roleta */}
       <div className="animate-fade-in">
         <Roulette onSpinComplete={fetchStats} />
       </div>
