@@ -10,13 +10,18 @@ export default function HomePage() {
   const [stats, setStats] = useState({ todayEarnings: 0, newInvites: 0 });
   const [loading, setLoading] = useState(true);
 
+  // CORREÇÃO 1: O useEffect agora "espera" o token existir antes de fazer a busca
   useEffect(() => {
-    fetchStats();
-  }, []);
+    if (token) {
+      fetchStats();
+    } else {
+      setLoading(false); // Se não tem token ainda, para de carregar para não travar a tela
+    }
+  }, [token]); // A dependência [token] faz rodar de novo assim que o token carrega
 
   const fetchStats = async () => {
     try {
-      // Endpoint corrigido para o padrão do Netlify Functions
+      setLoading(true);
       const response = await fetch('/.netlify/functions/stats-today', {
         headers: { 
           'Authorization': `Bearer ${token}`,
@@ -24,20 +29,19 @@ export default function HomePage() {
         }
       });
 
-      if (response.ok) {
+      // CORREÇÃO 2: Evita o erro "Unexpected token <" verificando se a resposta é realmente JSON
+      const contentType = response.headers.get("content-type");
+      if (response.ok && contentType && contentType.indexOf("application/json") !== -1) {
         const data = await response.json();
-        // Garante que o estado receba os dados ou mantenha os zeros caso o backend mande vazio
         setStats({
           todayEarnings: data.todayEarnings || 0,
           newInvites: data.newInvites || 0
         });
       } else {
-        // Se a resposta não for 200 OK, define como 0 e loga o erro sem quebrar o app
-        console.error('Falha ao buscar estatísticas. Status:', response.status);
+        console.error('Falha ao buscar estatísticas ou a rota não retornou JSON. Status:', response.status);
         setStats({ todayEarnings: 0, newInvites: 0 });
       }
     } catch (err) {
-      // Se der erro de rede, CORS ou falha de parse (como o Unexpected token <), cai aqui e zera
       console.error('Error fetching stats:', err);
       setStats({ todayEarnings: 0, newInvites: 0 });
     } finally {
