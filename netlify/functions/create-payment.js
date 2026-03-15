@@ -50,7 +50,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Documento inválido.' }) };
     }
     
-    // Validar valor mínimo (ajuste conforme sua regra)
+    // Validar valor mínimo
     if (parseFloat(amount) < 1) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'O valor mínimo é R$ 1,00' }) };
     }
@@ -64,9 +64,7 @@ exports.handler = async (event) => {
     const SITE_URL = process.env.URL || 'http://localhost:8888';
     const callbackUrl = `${SITE_URL}/.netlify/functions/webhook-payment`;
 
-    // ---------------------------------------------------------
-    // 2. GERAR O ID DO DEPÓSITO ANTECIPADAMENTE (O SEGREDO)
-    // ---------------------------------------------------------
+    // 2. GERAR O ID DO DEPÓSITO ANTECIPADAMENTE
     const depositRef = db.collection('deposits').doc();
     const transactionId = depositRef.id;
 
@@ -76,7 +74,7 @@ exports.handler = async (event) => {
       callbackUrl: callbackUrl,
       payerName: cleanName,
       payerDocument: cleanDocument,
-      reference: transactionId // <-- Vincula o PIX ao documento do Firestore
+      reference: transactionId 
     }, {
       headers: { 
         'API-Key': evopayToken, 
@@ -100,41 +98,39 @@ exports.handler = async (event) => {
 
     // 5. Link da Imagem QR Code
     const qrImage = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(brCode)}`;
-    
-// ... (mantenha o início igual)
 
-    // 6. Salvar no Firestore (Coleção Global de Depósitos)
-    await depositRef.set({
+    // 6. Preparar dados para o Firestore
+    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const amountFloat = parseFloat(amount);
+
+    // Salvar na Coleção Global de Depósitos
+    const globalDepositPromise = depositRef.set({
       userId: userId,
       userName: userName, 
-      amount: parseFloat(amount),
+      amount: amountFloat,
       pixCode: brCode, 
       qrImage: qrImage, 
       transactionId: transactionId,
       status: 'pending',
       gateway: 'evopay',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      createdAt: timestamp
     });
 
-    // --- NOVA PARTE: Criar no Histórico do Usuário ---
+    // Salvar na Coleção de Histórico do Usuário
     const userTransactionRef = db.collection('users').doc(userId).collection('transactions').doc(transactionId);
-    await userTransactionRef.set({
+    const userTransactionPromise = userTransactionRef.set({
       type: 'deposit',
-      amount: parseFloat(amount),
+      amount: amountFloat,
       status: 'pending',
-      description: 'Depósito via PIX (Pendente)',
+      description: 'Depósito via PIX',
       transactionId: transactionId,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      createdAt: timestamp
     });
-    // ------------------------------------------------
 
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({ success: true, pixCode: brCode, qrImage: qrImage, transactionId: transactionId })
-    };
-// ...
-    // 7. Retorno para o Frontend
+    // Executar ambas as gravações ao mesmo tempo para ser mais rápido
+    await Promise.all([globalDepositPromise, userTransactionPromise]);
+
+    // 7. Retorno Unificado para o Frontend
     return {
       statusCode: 200,
       headers,
@@ -143,8 +139,8 @@ exports.handler = async (event) => {
         pixCode: brCode,
         qrImage: qrImage,
         transactionId: transactionId,
-        pix_code: brCode, // compatibilidade
-        qr_image: qrImage  // compatibilidade
+        pix_code: brCode, // mantido para compatibilidade com frontends mais antigos
+        qr_image: qrImage 
       })
     };
 
