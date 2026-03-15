@@ -15,38 +15,37 @@ export default function HomePage() {
   }, []);
 
 const fetchStats = async () => {
-    try {
-      // CORREÇÃO: Adicionado ?userId=${user?.uid || user?.id} na URL
-      // Verifique se o seu objeto user usa 'uid' ou 'id'
-      const userId = user?.uid || user?.id; 
-      
-      if (!userId) return; // Não faz a chamada se o usuário não estiver carregado
+  try {
+    // Pegamos o ID do usuário que já existe no seu AuthContext
+    const userId = user?.uid || user?.id; 
+    
+    if (!userId) return; // Se não tiver ID, nem tenta chamar
 
-      const response = await fetch(`/.netlify/functions/stats-today?userId=${userId}`, {
-        headers: { 
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setStats({
-          todayEarnings: data.todayEarnings || 0,
-          newInvites: data.newInvites || 0
-        });
-      } else {
-        console.error('Falha ao buscar estatísticas. Status:', response.status);
-        setStats({ todayEarnings: 0, newInvites: 0 });
+    // CORREÇÃO: Adicionado o ?userId= na URL
+    const response = await fetch(`/.netlify/functions/stats-today?userId=${userId}`, {
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
       }
-    } catch (err) {
-      console.error('Error fetching stats:', err);
-      setStats({ todayEarnings: 0, newInvites: 0 });
-    } finally {
-      setLoading(false);
-    }
-  };
+    });
 
+    if (response.ok) {
+      const data = await response.json();
+      setStats({
+        todayEarnings: data.todayEarnings || 0,
+        newInvites: data.newInvites || 0
+      });
+    } else {
+      console.error('Erro na API:', response.status);
+      setStats({ todayEarnings: 0, newInvites: 0 });
+    }
+  } catch (err) {
+    console.error('Erro de conexão:', err);
+    setStats({ todayEarnings: 0, newInvites: 0 });
+  } finally {
+    setLoading(false);
+  }
+};
   const getUserInitial = () => {
     return user?.email?.charAt(0).toUpperCase() || 'M';
   };
