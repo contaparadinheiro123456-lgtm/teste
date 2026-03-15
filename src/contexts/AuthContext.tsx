@@ -162,13 +162,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  /* =========================
-     LÓGICA DE 3 NÍVEIS (PAGAMENTO REAL)
+/* =========================
+     LÓGICA DE 3 NÍVEIS (PAGAMENTO REAL + HISTÓRICO)
   ========================= */
 
   const processDepositCommissions = async (userId: string, depositAmount: number) => {
     try {
-      // 1. Buscar quem convidou o usuário (Nível 1)
       const userDoc = await getDoc(doc(db, 'users', userId));
       const userData = userDoc.data();
       if (!userData?.referredBy) return;
@@ -181,15 +180,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         balance: increment(bonusL1),
         totalEarned: increment(bonusL1)
       });
+      // NOVO: Cria o recibo para a aba Equipe somar
+      await addDoc(collection(db, 'users', inviterL1Id, 'transactions'), {
+        type: 'commission',
+        level: 1,
+        amount: bonusL1,
+        fromUser: userId,
+        createdAt: serverTimestamp()
+      });
 
-      // Atualiza o status do convite para "completed" (agora aparece na Equipe como ganho)
+      // Atualiza o convite pendente para concluído
       const qInv = query(collection(db, 'invites'), where('invitedId', '==', userId), where('status', '==', 'pending'));
       const invSnap = await getDocs(qInv);
       if (!invSnap.empty) {
-        await updateDoc(doc(db, 'invites', invSnap.docs[0].id), { 
-          status: 'completed', 
-          commission: bonusL1 
-        });
+        await updateDoc(doc(db, 'invites', invSnap.docs[0].id), { status: 'completed', commission: bonusL1 });
       }
 
       // --- PAGAMENTO NÍVEL 2 (5%) ---
@@ -201,6 +205,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           balance: increment(bonusL2),
           totalEarned: increment(bonusL2)
         });
+        await addDoc(collection(db, 'users', inviterL2Id, 'transactions'), {
+          type: 'commission',
+          level: 2,
+          amount: bonusL2,
+          fromUser: userId,
+          createdAt: serverTimestamp()
+        });
 
         // --- PAGAMENTO NÍVEL 3 (1%) ---
         const invL2Doc = await getDoc(doc(db, 'users', inviterL2Id));
@@ -211,13 +222,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             balance: increment(bonusL3),
             totalEarned: increment(bonusL3)
           });
+          await addDoc(collection(db, 'users', inviterL3Id, 'transactions'), {
+            type: 'commission',
+            level: 3,
+            amount: bonusL3,
+            fromUser: userId,
+            createdAt: serverTimestamp()
+          });
         }
       }
     } catch (err) {
       console.error("Erro ao processar comissões:", err);
     }
   };
-
   /* =========================
      OUTRAS FUNÇÕES
   ========================= */
