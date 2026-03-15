@@ -17,31 +17,32 @@ exports.handler = async (event) => {
     const { userId } = event.queryStringParameters || {};
 
     if (!userId) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'userId é obrigatório' }) };
+      return { 
+        statusCode: 400, 
+        body: JSON.stringify({ error: 'userId é obrigatório' }) 
+      };
     }
 
+    // Define o início do dia de hoje (00:00:00)
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const startTimestamp = admin.firestore.Timestamp.fromDate(startOfDay);
 
-    // 1. Ganhos de Hoje (Soma depósitos, comissões e indicações)
-    const statsQuery = await db.collection('users').doc(userId)
-      .collection('transactions')
-      .where('createdAt', '>=', startTimestamp)
+    // 1. Ganhos de Hoje (Busca na coleção 'deposits' que vimos no print)
+    const depositsQuery = await db.collection('deposits')
+      .where('userId', '==', userId)
       .where('status', '==', 'completed')
+      .where('createdAt', '>=', startTimestamp)
       .get();
 
     let todayEarnings = 0;
-    statsQuery.forEach(doc => {
+    depositsQuery.forEach(doc => {
       const data = doc.data();
-      // Incluímos 'indication' para pegar os R$ 3,00 que aparecem no seu print
-      const tiposValidos = ['deposit', 'commission', 'indication', 'referral'];
-      if (tiposValidos.includes(data.type)) {
-        todayEarnings += Number(data.amount || 0);
-      }
+      // Soma o campo 'amount' que aparece no seu print
+      todayEarnings += Number(data.amount || 0);
     });
 
-    // 2. Convidados de Hoje
+    // 2. Convidados de Hoje (Novos usuários que este user indicou hoje)
     const invitesQuery = await db.collection('users')
       .where('referredBy', '==', userId)
       .where('createdAt', '>=', startTimestamp)
@@ -49,13 +50,20 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Access-Control-Allow-Origin': '*' 
+      },
       body: JSON.stringify({
         todayEarnings: todayEarnings,
         newInvites: invitesQuery.size
       })
     };
   } catch (error) {
-    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+    console.error("Erro na função stats:", error);
+    return { 
+      statusCode: 500, 
+      body: JSON.stringify({ error: error.message }) 
+    };
   }
 };
