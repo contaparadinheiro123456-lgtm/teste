@@ -26,137 +26,60 @@ export function useTeam() {
   const [teamData, setTeamData] = useState<TeamData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    if (!user) {
+  const fetchTeamData = async () => {
+    if (!user?.id) {
       setLoading(false);
       return;
     }
 
-    fetchTeamData();
-  }, [user]);
-
-  const fetchTeamData = async () => {
-    if (!user) return;
-
     try {
-      // Nível 1: Convidados diretos
-      const level1Query = query(
-        collection(db, 'users'),
-        where('referredBy', '==', user.id)
+      // 1. Buscar TODAS as transações de comissão de uma vez
+      const transQuery = query(
+        collection(db, 'users', user.id, 'transactions'), 
+        where('type', '==', 'commission')
       );
-      const level1Snapshot = await getDocs(level1Query);
-      const level1Members: TeamMember[] = [];
-      const level1Ids: string[] = [];
-
-      level1Snapshot.forEach((doc) => {
+      const transSnap = await getDocs(transQuery);
+      
+      const earnings = { 1: 0, 2: 0, 3: 0 };
+      transSnap.forEach(doc => {
         const data = doc.data();
-        level1Members.push({
-          id: doc.id,
-          email: data.email,
-          createdAt: data.createdAt
-        });
-        level1Ids.push(doc.id);
-      });
-
-      // Buscar comissões nível 1
-      const level1TransactionsQuery = query(
-        collection(db, 'users', user.id, 'transactions'),
-        where('type', '==', 'commission'),
-        where('level', '==', 1)
-      );
-      const level1TransactionsSnapshot = await getDocs(level1TransactionsQuery);
-      let level1Earnings = 0;
-      level1TransactionsSnapshot.forEach((doc) => {
-        level1Earnings += Number(doc.data().amount) || 0;
-      });
-
-      // Nível 2: Convidados dos convidados
-      let level2Members: TeamMember[] = [];
-      let level2Ids: string[] = [];
-
-      if (level1Ids.length > 0) {
-        for (const id of level1Ids) {
-          const level2Query = query(
-            collection(db, 'users'),
-            where('referredBy', '==', id)
-          );
-          const level2Snapshot = await getDocs(level2Query);
-          
-          level2Snapshot.forEach((doc) => {
-            const data = doc.data();
-            level2Members.push({
-              id: doc.id,
-              email: data.email,
-              createdAt: data.createdAt
-            });
-            level2Ids.push(doc.id);
-          });
+        const level = data.level || 1; // Fallback se o webhook antigo não gravou
+        if (level >= 1 && level <= 3) {
+          earnings[level as 1|2|3] += Number(data.amount) || 0;
         }
-      }
-
-      // Buscar comissões nível 2
-      const level2TransactionsQuery = query(
-        collection(db, 'users', user.id, 'transactions'),
-        where('type', '==', 'commission'),
-        where('level', '==', 2)
-      );
-      const level2TransactionsSnapshot = await getDocs(level2TransactionsQuery);
-      let level2Earnings = 0;
-      level2TransactionsSnapshot.forEach((doc) => {
-        level2Earnings += Number(doc.data().amount) || 0;
       });
 
-      // Nível 3
-      let level3Members: TeamMember[] = [];
+      // 2. Nível 1: Convidados diretos
+      const l1Query = query(collection(db, 'users'), where('referredBy', '==', user.id));
+      const l1Snap = await getDocs(l1Query);
+      const l1Members = l1Snap.docs.map(doc => ({ id: doc.id, email: doc.data().email, createdAt: doc.data().createdAt } as TeamMember));
+      const l1Ids = l1Members.map(m => m.id);
 
-      if (level2Ids.length > 0) {
-        for (const id of level2Ids) {
-          const level3Query = query(
-            collection(db, 'users'),
-            where('referredBy', '==', id)
-          );
-          const level3Snapshot = await getDocs(level3Query);
-          
-          level3Snapshot.forEach((doc) => {
-            const data = doc.data();
-            level3Members.push({
-              id: doc.id,
-              email: data.email,
-              createdAt: data.createdAt
-            });
-          });
-        }
+      // 3. Nível 2
+      let l2Members: TeamMember[] = [];
+      if (l1Ids.length > 0) {
+        // Limite do Firestore é de 30 itens na cláusula 'in', dividindo em blocos se necessário.
+        // Para simplificar, pegamos os 30 primeiros IDs ativos
+        const l2Query = query(collection(db, 'users'), where('referredBy', 'in', l1Ids.slice(0, 30)));
+        const l2Snap = await getDocs(l2Query);
+        l2Members = l2Snap.docs.map(doc => ({ id: doc.id, email: doc.data().email, createdAt: doc.data().createdAt } as TeamMember));
       }
+      const l2Ids = l2Members.map(m => m.id);
 
-      // Buscar comissões nível 3
-      const level3TransactionsQuery = query(
-        collection(db, 'users', user.id, 'transactions'),
-        where('type', '==', 'commission'),
-        where('level', '==', 3)
-      );
-      const level3TransactionsSnapshot = await getDocs(level3TransactionsQuery);
-      let level3Earnings = 0;
-      level3TransactionsSnapshot.forEach((doc) => {
-        level3Earnings += Number(doc.data().amount) || 0;
-      });
+      // 4. Nível 3
+      let l3Members: TeamMember[] = [];
+      if (l2Ids.length > 0) {
+        const l3Query = query(collection(db, 'users'), where('referredBy', 'in', l2Ids.slice(0, 30)));
+        const l3Snap = await getDocs(l3Query);
+        l3Members = l3Snap.docs.map(doc => ({ id: doc.id, email: doc.data().email, createdAt: doc.data().createdAt } as TeamMember));
+      }
 
       setTeamData({
-        level1: {
-          count: level1Members.length,
-          totalEarned: level1Earnings,
-          members: level1Members
-        },
-        level2: {
-          count: level2Members.length,
-          totalEarned: level2Earnings,
-          members: level2Members
-        },
-        level3: {
-          count: level3Members.length,
-          totalEarned: level3Earnings,
-          members: level3Members
-        }
+        level1: { count: l1Members.length, totalEarned: earnings[1], members: l1Members },
+        level2: { count: l2Members.length, totalEarned: earnings[2], members: l2Members },
+        level3: { count: l3Members.length, totalEarned: earnings[3], members: l3Members }
       });
+
     } catch (error) {
       console.error('Error fetching team data:', error);
     } finally {
@@ -164,9 +87,9 @@ export function useTeam() {
     }
   };
 
-  return {
-    teamData,
-    loading,
-    refreshTeam: fetchTeamData
-  };
+  useEffect(() => {
+    fetchTeamData();
+  }, [user]);
+
+  return { teamData, loading, refreshTeam: fetchTeamData };
 }
