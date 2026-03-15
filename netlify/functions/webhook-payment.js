@@ -1,148 +1,145 @@
 // ========================================
-// NETLIFY FUNCTION: Webhook Pagamentos Corrigido
+// NETLIFY FUNCTION: Webhook Pagamentos Final
 // ========================================
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-  if (privateKey) {
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: privateKey.replace(/\\n/g, '\n')
-      })
-    });
-  }
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    })
+  });
 }
 
-const db = admin.apps.length ? admin.firestore() : null;
+const db = admin.firestore();
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Método não permitido' };
 
   try {
-    if (!db) throw new Error("Banco de dados não conectado.");
-
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     
-    // Identificação da transação vinda do Gateway
+    // 1. Identificar a Transação
     const transactionId = body.reference || body.id || (event.queryStringParameters ? event.queryStringParameters.id : null);
+    if (!transactionId) return { statusCode: 400, body: JSON.stringify({ error: 'ID ausente' }) };
 
-    if (!transactionId) return { statusCode: 400, body: JSON.stringify({ error: 'ID/Reference ausente' }) };
-
+    // 2. Verificar Status de Pagamento
     const statusCeto = String(body.status).toUpperCase();
-    // Verifica se o status indica pagamento concluído
     const isPaid = statusCeto === 'PAID' || statusCeto === 'COMPLETED' || body.success === true;
 
-    if (!isPaid) {
-      return { statusCode: 200, body: JSON.stringify({ message: 'Pagamento ainda não confirmado' }) };
-    }
+    if (!isPaid) return { statusCode: 200, body: JSON.stringify({ message: 'Aguardando pagamento' }) };
 
-    // Busca o documento do depósito para saber quem é o usuário e o valor
-    const depositDoc = await db.collection('deposits').doc(transactionId).get();
+    // 3. Buscar Depósito Global
+    const depositRef = db.collection('deposits').doc(transactionId);
+    const depositDoc = await depositRef.get();
     
-    if (!depositDoc.exists) {
-      return { statusCode: 404, body: JSON.stringify({ error: 'Depósito não encontrado' }) };
-    }
+    if (!depositDoc.exists) return { statusCode: 404, body: JSON.stringify({ error: 'Depósito não encontrado' }) };
 
     const { userId, amount, status: currentStatus, userName } = depositDoc.data();
 
-    // Se já estiver pago, não processa novamente (evita duplicar saldo)
-    if (currentStatus === 'completed') {
+    // Evitar processamento duplo
+    if (currentStatus === 'completed' || currentStatus === 'approved') {
       return { statusCode: 200, body: JSON.stringify({ message: 'Já processado' }) };
     }
 
     const parsedAmount = parseFloat(amount);
     const userRef = db.collection('users').doc(userId);
 
+    // ==========================================
+    // TRANSAÇÃO ATÔMICA (SEGURANÇA TOTAL)
+    // ==========================================
     await db.runTransaction(async (transaction) => {
-      // ==========================================
-      // 1. FASE DE LEITURA (READS) - OBRIGATÓRIO NO TOPO
-      // ==========================================
+      
+      // --- FASE DE LEITURA (READS) ---
       const userSnap = await transaction.get(userRef);
       if (!userSnap.exists) throw new Error("Usuário não existe");
       const userData = userSnap.data();
 
-      let ref1Snap = null;
-      let ref2Snap = null;
-      let ref1Ref = null;
-      let ref2Ref = null;
+      let ref1Snap = null, ref2Snap = null, ref3Snap = null;
+      let ref1Ref = null, ref2Ref = null, ref3Ref = null;
 
-      // Busca dados do Afiliado Nível 1
+      // Buscar Padrinho Nível 1
       if (userData.referredBy) {
         ref1Ref = db.collection('users').doc(userData.referredBy);
         ref1Snap = await transaction.get(ref1Ref);
         
-        // Busca dados do Afiliado Nível 2 (Avô)
-        if (ref1Snap.exists) {
-          const ref1Data = ref1Snap.data();
-          if (ref1Data.referredBy) {
-            ref2Ref = db.collection('users').doc(ref1Data.referredBy);
-            ref2Snap = await transaction.get(ref2Ref);
+        // Buscar Padrinho Nível 2
+        if (ref1Snap.exists && ref1Snap.data().referredBy) {
+          ref2Ref = db.collection('users').doc(ref1Snap.data().referredBy);
+          ref2Snap = await transaction.get(ref2Ref);
+
+          // Buscar Padrinho Nível 3
+          if (ref2Snap.exists && ref2Snap.data().referredBy) {
+            ref3Ref = db.collection('users').doc(ref2Snap.data().referredBy);
+            ref3Snap = await transaction.get(ref3Ref);
           }
         }
       }
 
-      // ==========================================
-      // 2. FASE DE ESCRITA (WRITES) - OBRIGATÓRIO NO FINAL
-      // ==========================================
-      
-      // Atualiza o status do depósito principal
-      transaction.update(depositDoc.ref, { 
-        status: 'completed',
-        paidAt: admin.firestore.FieldValue.serverTimestamp()
+      // --- FASE DE ESCRITA (WRITES) ---
+
+      // A) Atualizar Depósito Global
+      transaction.update(depositRef, { 
+        status: 'completed', 
+        paidAt: admin.firestore.FieldValue.serverTimestamp() 
       });
 
-      // Adiciona saldo ao usuário
+      // B) Atualizar Saldo do Usuário
       transaction.update(userRef, {
         balance: admin.firestore.FieldValue.increment(parsedAmount),
         totalDeposited: admin.firestore.FieldValue.increment(parsedAmount)
       });
 
-      // REGISTRO NA SUBCOLEÇÃO TRANSACTIONS
+      // C) Atualizar Histórico do Usuário (Criado no create-payment)
       const userTransRef = userRef.collection('transactions').doc(transactionId);
       transaction.set(userTransRef, {
-        amount: parsedAmount,
         status: 'completed',
-        type: 'deposit',
         description: 'Depósito via PIX (Confirmado)',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
         paidAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // Lógica de Comissões de Afiliados (Nível 1)
-      if (ref1Snap && ref1Snap.exists) {
-        const bonus1 = parsedAmount * 0.10;
+      // D) Comissões (20% / 5% / 1%)
+      
+      // Nível 1 (20%)
+      if (ref1Snap?.exists) {
+        const bonus1 = parsedAmount * 0.20;
         transaction.update(ref1Ref, {
           balance: admin.firestore.FieldValue.increment(bonus1),
           totalCommissions: admin.firestore.FieldValue.increment(bonus1)
         });
-
-        const ref1TransRef = ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`);
-        transaction.set(ref1TransRef, {
-          amount: bonus1,
-          status: 'completed',
-          type: 'commission',
+        transaction.set(ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`), {
+          amount: bonus1, status: 'completed', type: 'commission',
           description: `Indicação Nível 1: ${userName || 'Usuário'}`,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
       }
 
-      // Lógica de Comissões de Afiliados (Nível 2)
-      if (ref2Snap && ref2Snap.exists) {
+      // Nível 2 (5%)
+      if (ref2Snap?.exists) {
         const bonus2 = parsedAmount * 0.05;
         transaction.update(ref2Ref, {
           balance: admin.firestore.FieldValue.increment(bonus2),
           totalCommissions: admin.firestore.FieldValue.increment(bonus2)
         });
-
-        const ref2TransRef = ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`);
-        transaction.set(ref2TransRef, {
-          amount: bonus2,
-          status: 'completed',
-          type: 'commission',
+        transaction.set(ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`), {
+          amount: bonus2, status: 'completed', type: 'commission',
           description: `Indicação Nível 2: ${userName || 'Usuário'}`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      // Nível 3 (1%)
+      if (ref3Snap?.exists) {
+        const bonus3 = parsedAmount * 0.01;
+        transaction.update(ref3Ref, {
+          balance: admin.firestore.FieldValue.increment(bonus3),
+          totalCommissions: admin.firestore.FieldValue.increment(bonus3)
+        });
+        transaction.set(ref3Ref.collection('transactions').doc(`bonus3_${transactionId}`), {
+          amount: bonus3, status: 'completed', type: 'commission',
+          description: `Indicação Nível 3: ${userName || 'Usuário'}`,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
       }
