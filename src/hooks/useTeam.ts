@@ -42,7 +42,7 @@ export function useTeam() {
       // Nível 1: Convidados diretos
       const level1Query = query(
         collection(db, 'users'),
-        where('invitedBy', '==', user.id)
+        where('referredBy', '==', user.id)
       );
       const level1Snapshot = await getDocs(level1Query);
       const level1Members: TeamMember[] = [];
@@ -78,7 +78,7 @@ export function useTeam() {
         for (const id of level1Ids) {
           const level2Query = query(
             collection(db, 'users'),
-            where('invitedBy', '==', id)
+            where('referredBy', '==', id)
           );
           const level2Snapshot = await getDocs(level2Query);
           
@@ -113,7 +113,7 @@ export function useTeam() {
         for (const id of level2Ids) {
           const level3Query = query(
             collection(db, 'users'),
-            where('invitedBy', '==', id)
+            where('referredBy', '==', id)
           );
           const level3Snapshot = await getDocs(level3Query);
           
