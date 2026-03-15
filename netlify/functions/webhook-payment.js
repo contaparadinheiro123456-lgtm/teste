@@ -1,5 +1,5 @@
 // ========================================
-// NETLIFY FUNCTION: Webhook Pagamentos (EvoPay)
+// NETLIFY FUNCTION: Webhook Pagamentos (VizzionPay)
 // ========================================
 const admin = require('firebase-admin');
 
@@ -26,7 +26,7 @@ exports.handler = async (event) => {
 
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     
-    // Na EvoPay, você enviou o transactionId como 'reference'
+    // Identificação da transação vinda da VizzionPay
     const transactionId = body.reference || body.id || (event.queryStringParameters ? event.queryStringParameters.id : null);
 
     if (!transactionId) return { statusCode: 400, body: JSON.stringify({ error: 'ID/Reference ausente no webhook' }) };
@@ -36,6 +36,7 @@ exports.handler = async (event) => {
 
     if (!isPaid) return { statusCode: 200, body: JSON.stringify({ message: 'Aguardando pagamento' }) };
 
+    // Busca o depósito no Firestore para obter dados do usuário e valor
     const depositRef = db.collection('deposits').doc(transactionId);
     const depositDoc = await depositRef.get();
 
@@ -52,6 +53,7 @@ exports.handler = async (event) => {
       const userSnap = await transaction.get(userRef);
       if (!userSnap.exists) throw new Error(`Usuário não existe: ${userId}`);
 
+      // Verifica se o usuário foi convidado por alguém para pagar comissões
       const inviteQuery = db.collection('invites').where('invitedId', '==', userId).where('status', '==', 'pending').limit(1);
       const inviteSnap = await transaction.get(inviteQuery);
 
@@ -73,13 +75,20 @@ exports.handler = async (event) => {
       }
 
       // 2. ESCRITAS (WRITES)
-      // 1. Atualizar o depósito global
-      transaction.update(depositRef, { status: 'approved', paidAt: admin.firestore.FieldValue.serverTimestamp() });
       
-      // 2. Atualizar o saldo do usuário
-      transaction.update(userRef, { balance: admin.firestore.FieldValue.increment(parsedAmount) });
+      // Atualiza o status do depósito
+      transaction.update(depositRef, { 
+        status: 'approved', 
+        paidAt: admin.firestore.FieldValue.serverTimestamp() 
+      });
+      
+      // CORREÇÃO 1: Atualiza o saldo do usuário E adiciona +1 giro disponível
+      transaction.update(userRef, { 
+        balance: admin.firestore.FieldValue.increment(parsedAmount),
+        spinsAvailable: admin.firestore.FieldValue.increment(1) 
+      });
 
-      // 3. ATUALIZAR O HISTÓRICO (O que aparece na sua tela do print)
+      // Registra a transação no histórico do usuário
       const userTransRef = userRef.collection('transactions').doc(transactionId);
       transaction.set(userTransRef, {
         status: 'completed',
@@ -87,7 +96,7 @@ exports.handler = async (event) => {
         paidAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // Atualiza status do convite (se houver)
+      // Marca o convite como completado, se houver
       if (!inviteSnap.empty) {
         transaction.update(inviteSnap.docs[0].ref, { status: 'completed' });
       }
@@ -95,9 +104,11 @@ exports.handler = async (event) => {
       // Distribuição de Comissões (Níveis 1 a 3)
       if (ref1Snap?.exists) {
         const bonus1 = parsedAmount * 0.20;
+        // CORREÇÃO 2: Padrinho Nível 1 recebe comissão E +1 giro
         transaction.update(ref1Snap.ref, {
           balance: admin.firestore.FieldValue.increment(bonus1),
-          totalCommissions: admin.firestore.FieldValue.increment(bonus1)
+          totalCommissions: admin.firestore.FieldValue.increment(bonus1),
+          spinsAvailable: admin.firestore.FieldValue.increment(1)
         });
         
         if (ref2Snap?.exists) {
