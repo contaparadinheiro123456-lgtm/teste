@@ -1,5 +1,5 @@
 // ========================================
-// NETLIFY FUNCTION: Webhook Pagamentos Final
+// NETLIFY FUNCTION: Webhook Pagamentos Final (CORRIGIDO)
 // ========================================
 const admin = require('firebase-admin');
 
@@ -39,7 +39,6 @@ exports.handler = async (event) => {
 
     const { userId, amount, status: currentStatus, userName } = depositDoc.data();
 
-    // Evitar processamento duplo
     if (currentStatus === 'completed' || currentStatus === 'approved') {
       return { statusCode: 200, body: JSON.stringify({ message: 'Já processado' }) };
     }
@@ -48,11 +47,10 @@ exports.handler = async (event) => {
     const userRef = db.collection('users').doc(userId);
 
     // ==========================================
-    // TRANSAÇÃO ATÔMICA (SEGURANÇA TOTAL)
+    // TRANSAÇÃO ATÔMICA
     // ==========================================
     await db.runTransaction(async (transaction) => {
       
-      // --- FASE DE LEITURA (READS) ---
       const userSnap = await transaction.get(userRef);
       if (!userSnap.exists) throw new Error("Usuário não existe");
       const userData = userSnap.data();
@@ -60,17 +58,14 @@ exports.handler = async (event) => {
       let ref1Snap = null, ref2Snap = null, ref3Snap = null;
       let ref1Ref = null, ref2Ref = null, ref3Ref = null;
 
-      // Buscar Padrinho Nível 1
       if (userData.referredBy) {
         ref1Ref = db.collection('users').doc(userData.referredBy);
         ref1Snap = await transaction.get(ref1Ref);
         
-        // Buscar Padrinho Nível 2
         if (ref1Snap.exists && ref1Snap.data().referredBy) {
           ref2Ref = db.collection('users').doc(ref1Snap.data().referredBy);
           ref2Snap = await transaction.get(ref2Ref);
 
-          // Buscar Padrinho Nível 3
           if (ref2Snap.exists && ref2Snap.data().referredBy) {
             ref3Ref = db.collection('users').doc(ref2Snap.data().referredBy);
             ref3Snap = await transaction.get(ref3Ref);
@@ -78,9 +73,7 @@ exports.handler = async (event) => {
         }
       }
 
-      // --- FASE DE ESCRITA (WRITES) ---
-
-      // A) Atualizar Depósito Global
+      // A) Atualizar Depósito
       transaction.update(depositRef, { 
         status: 'completed', 
         paidAt: admin.firestore.FieldValue.serverTimestamp() 
@@ -92,7 +85,7 @@ exports.handler = async (event) => {
         totalDeposited: admin.firestore.FieldValue.increment(parsedAmount)
       });
 
-      // C) Atualizar Histórico do Usuário (Criado no create-payment)
+      // C) Histórico do Depósito
       const userTransRef = userRef.collection('transactions').doc(transactionId);
       transaction.set(userTransRef, {
         status: 'completed',
@@ -100,7 +93,7 @@ exports.handler = async (event) => {
         paidAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // D) Comissões (20% / 5% / 1%)
+      // D) Comissões
       
       // Nível 1 (20%)
       if (ref1Snap?.exists) {
@@ -111,6 +104,7 @@ exports.handler = async (event) => {
         });
         transaction.set(ref1Ref.collection('transactions').doc(`bonus1_${transactionId}`), {
           amount: bonus1, status: 'completed', type: 'commission',
+          level: 1, // <--- ADICIONADO AQUI
           description: `Indicação Nível 1: ${userName || 'Usuário'}`,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
@@ -125,6 +119,7 @@ exports.handler = async (event) => {
         });
         transaction.set(ref2Ref.collection('transactions').doc(`bonus2_${transactionId}`), {
           amount: bonus2, status: 'completed', type: 'commission',
+          level: 2, // <--- ADICIONADO AQUI
           description: `Indicação Nível 2: ${userName || 'Usuário'}`,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
@@ -139,6 +134,7 @@ exports.handler = async (event) => {
         });
         transaction.set(ref3Ref.collection('transactions').doc(`bonus3_${transactionId}`), {
           amount: bonus3, status: 'completed', type: 'commission',
+          level: 3, // <--- ADICIONADO AQUI
           description: `Indicação Nível 3: ${userName || 'Usuário'}`,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
