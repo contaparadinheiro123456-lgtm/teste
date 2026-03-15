@@ -3,7 +3,6 @@
 // ========================================
 // POST /.netlify/functions/admin-approve-withdraw
 
-require('dotenv').config();
 const admin = require('firebase-admin');
 const axios = require('axios');
 
