@@ -14,6 +14,7 @@ import {
   query,
   where,
   getDocs,
+  getDoc,
   onSnapshot,
   serverTimestamp,
   updateDoc,
@@ -23,7 +24,7 @@ import {
 
 import { auth, db } from '../firebase/firebase';
 
-// Interface do Usuário adaptada para suportar o sistema de afiliados
+// Interface do Usuário completa
 interface User {
   id: string;
   name: string;
@@ -44,7 +45,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string, inviteCode?: string) => Promise<void>;
   logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+  processDepositCommissions: (userId: string, depositAmount: number) => Promise<void>; // Nova função essencial
   updateBalance: (amount: number) => Promise<void>;
   completeSpin: (prizeAmount: number) => Promise<void>;
 }
@@ -52,7 +53,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 /* =========================
-   LÓGICA DE GERAÇÃO DE CÓDIGO ÚNICO
+   AUXILIARES DE CONVITE
 ========================= */
 
 const generateInviteCode = (): string => {
@@ -62,7 +63,6 @@ const generateInviteCode = (): string => {
 const generateUniqueInviteCode = async (): Promise<string> => {
   let code = generateInviteCode();
   const usersRef = collection(db, 'users');
-  
   for (let i = 0; i < 5; i++) {
     const q = query(usersRef, where('inviteCode', '==', code));
     const snapshot = await getDocs(q);
@@ -92,32 +92,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const userDocRef = doc(db, 'users', firebaseUser.uid);
-
-      // Listener em tempo real para refletir mudanças de saldo e bônus instantaneamente
-      unsubscribeUser = onSnapshot(userDocRef, async (docSnap) => {
+      unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
         if (!docSnap.exists()) return;
-        
         const data = docSnap.data();
-
-        // Garante que todo usuário tenha um código de convite próprio
-        if (!data.inviteCode) {
-          const newCode = await generateUniqueInviteCode();
-          await updateDoc(userDocRef, { inviteCode: newCode });
-          return;
-        }
-
         setUser({
           id: firebaseUser.uid,
-          name: data.name || '',
-          email: firebaseUser.email || '',
-          balance: data.balance || 0,
-          inviteCode: data.inviteCode,
-          totalEarned: data.totalEarned || 0,
-          totalWithdrawn: data.totalWithdrawn || 0,
-          spinsAvailable: data.spinsAvailable || 0,
-          role: data.role || 'user',
-          referredBy: data.referredBy || null,
-          createdAt: data.createdAt
+          ...data
         } as User);
       });
 
@@ -132,63 +112,114 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   /* =========================
-     REGISTER ADAPTADO PARA 3 NÍVEIS
+     REGISTO (SEM PAGAMENTO IMEDIATO)
   ========================= */
 
   const register = async (email: string, password: string, name: string, inviteCodeInput?: string) => {
     try {
-      // 1. Cria a conta no Firebase Auth
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const uid = userCredential.user.uid;
-
       let inviterUid: string | null = null;
 
-      // 2. Processa o código de convite (se fornecido)
-      if (inviteCodeInput && inviteCodeInput.trim() !== "") {
-        const usersRef = collection(db, 'users');
-        const q = query(usersRef, where('inviteCode', '==', inviteCodeInput.trim().toUpperCase()));
+      // 1. Verifica se o código de convite existe
+      if (inviteCodeInput?.trim()) {
+        const q = query(collection(db, 'users'), where('inviteCode', '==', inviteCodeInput.trim().toUpperCase()));
         const snapshot = await getDocs(q);
 
         if (!snapshot.empty) {
-          inviterUid = snapshot.docs[0].id; // ID do usuário que convidou
-
-          // 3. Registra na coleção 'invites' com status pending
-          // O seu webhook mudará este status para 'completed' no primeiro depósito
+          inviterUid = snapshot.docs[0].id;
+          
+          // Cria o convite como PENDENTE (não gera dinheiro ainda)
           await addDoc(collection(db, 'invites'), {
             createdAt: serverTimestamp(),
             invitedId: uid,
             inviterId: inviterUid,
-            level: 1,
-            status: "pending"
+            status: "pending", // Importante para a aba Equipe filtrar
+            level: 1
           });
         }
       }
 
-      // 4. Gera o código de convite do novo usuário
       const myInviteCode = await generateUniqueInviteCode();
 
-      // 5. Salva o perfil completo no Firestore
+      // 2. Salva o perfil do novo usuário
       await setDoc(doc(db, 'users', uid), {
-        name: name,
-        email: email,
+        name,
+        email,
         balance: 0,
         inviteCode: myInviteCode,
-        referredBy: inviterUid || null, // Vínculo essencial para o sistema de 20%, 5% e 1%
+        referredBy: inviterUid || null,
         totalEarned: 0,
         totalWithdrawn: 0,
-        spinsAvailable: 1, 
+        spinsAvailable: 1,
         role: 'user',
         createdAt: serverTimestamp()
       });
 
-    } catch (error: any) {
+    } catch (error) {
       console.error("Erro no registro:", error);
       throw error;
     }
   };
 
   /* =========================
-     FUNÇÕES AUXILIARES
+     LÓGICA DE 3 NÍVEIS (PAGAMENTO REAL)
+  ========================= */
+
+  const processDepositCommissions = async (userId: string, depositAmount: number) => {
+    try {
+      // 1. Buscar quem convidou o usuário (Nível 1)
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      const userData = userDoc.data();
+      if (!userData?.referredBy) return;
+
+      const inviterL1Id = userData.referredBy;
+
+      // --- PAGAMENTO NÍVEL 1 (20%) ---
+      const bonusL1 = depositAmount * 0.20;
+      await updateDoc(doc(db, 'users', inviterL1Id), {
+        balance: increment(bonusL1),
+        totalEarned: increment(bonusL1)
+      });
+
+      // Atualiza o status do convite para "completed" (agora aparece na Equipe como ganho)
+      const qInv = query(collection(db, 'invites'), where('invitedId', '==', userId), where('status', '==', 'pending'));
+      const invSnap = await getDocs(qInv);
+      if (!invSnap.empty) {
+        await updateDoc(doc(db, 'invites', invSnap.docs[0].id), { 
+          status: 'completed', 
+          commission: bonusL1 
+        });
+      }
+
+      // --- PAGAMENTO NÍVEL 2 (5%) ---
+      const invL1Doc = await getDoc(doc(db, 'users', inviterL1Id));
+      if (invL1Doc.data()?.referredBy) {
+        const inviterL2Id = invL1Doc.data()?.referredBy;
+        const bonusL2 = depositAmount * 0.05;
+        await updateDoc(doc(db, 'users', inviterL2Id), {
+          balance: increment(bonusL2),
+          totalEarned: increment(bonusL2)
+        });
+
+        // --- PAGAMENTO NÍVEL 3 (1%) ---
+        const invL2Doc = await getDoc(doc(db, 'users', inviterL2Id));
+        if (invL2Doc.data()?.referredBy) {
+          const inviterL3Id = invL2Doc.data()?.referredBy;
+          const bonusL3 = depositAmount * 0.01;
+          await updateDoc(doc(db, 'users', inviterL3Id), {
+            balance: increment(bonusL3),
+            totalEarned: increment(bonusL3)
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Erro ao processar comissões:", err);
+    }
+  };
+
+  /* =========================
+     OUTRAS FUNÇÕES
   ========================= */
 
   const login = async (email: string, password: string) => {
@@ -197,18 +228,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(idToken);
   };
 
-  const logout = async () => {
-    await firebaseSignOut(auth);
-    setUser(null);
-    setToken(null);
-  };
+  const logout = () => firebaseSignOut(auth);
 
   const updateBalance = async (amount: number) => {
     if (!auth.currentUser) return;
     const userRef = doc(db, 'users', auth.currentUser.uid);
     await updateDoc(userRef, {
       balance: increment(amount),
-      totalEarned: increment(amount)
+      totalEarned: increment(amount > 0 ? amount : 0)
     });
   };
 
@@ -222,12 +249,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   };
 
-  const refreshUser = async () => {
-    if (auth.currentUser) await auth.currentUser.getIdToken(true);
-  };
-
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, refreshUser, updateBalance, completeSpin }}>
+    <AuthContext.Provider value={{ 
+      user, token, login, register, logout, 
+      processDepositCommissions, updateBalance, completeSpin 
+    }}>
       {children}
     </AuthContext.Provider>
   );
