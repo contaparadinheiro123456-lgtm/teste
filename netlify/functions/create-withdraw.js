@@ -30,7 +30,7 @@ exports.handler = async (event) => {
     const { userId, amount, pixKey, pixType, ownerName, ownerDocument } = JSON.parse(event.body);
 
     if (!userId || !amount || !pixKey || !pixType) {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: 'userId, amount, pixKey e pixType são obrigatórios' }) };
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'Dados obrigatórios ausentes.' }) };
     }
     if (amount < 35) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Saque mínimo é R$ 35,00' }) };
@@ -42,23 +42,25 @@ exports.handler = async (event) => {
     if (!userDoc.exists) return { statusCode: 404, headers, body: JSON.stringify({ error: 'Usuário não encontrado' }) };
 
     const balance = userDoc.data().balance || 0;
-    const totalWithFee = amount * 1.1; // Sua taxa atual
+    const totalWithFee = amount * 1.1; // Ajuste sua taxa aqui
 
     if (balance < totalWithFee) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Saldo insuficiente' }) };
     }
 
     const evopayToken = process.env.EVOPAY_TOKEN;
-    if (!evopayToken) throw new Error("Token EVOPAY_TOKEN não configurado.");
+    if (!evopayToken) throw new Error("EVOPAY_TOKEN não configurado.");
 
-    // 1. Aciona o saque na EvoPay
-    await axios.post('https://pix.evopay.cash/v1/withdraw', {
+    // 1. Aciona o saque na EvoPay e captura a resposta
+    const evopayResponse = await axios.post('https://pix.evopay.cash/v1/withdraw', {
       amount: parseFloat(amount),
       destinationKey: pixKey,
       description: `Saque App - ${ownerName || userId}`
     }, {
       headers: { 'API-Key': evopayToken, 'Content-Type': 'application/json' }
     });
+
+    const gatewayId = evopayResponse.data?.id || evopayResponse.data?.transactionId || 'N/A';
 
     // 2. Se a API aprovar a requisição, debita do saldo
     const batch = db.batch();
@@ -77,7 +79,8 @@ exports.handler = async (event) => {
       pixType,
       ownerName: ownerName || '',
       ownerDocument: ownerDocument || '',
-      status: 'completed', // Atualizado para Completed já que EvoPay faz via API na hora
+      gatewayTransactionId: gatewayId, // Salva o ID da EvoPay para auditoria
+      status: 'completed',
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
@@ -99,7 +102,6 @@ exports.handler = async (event) => {
     };
 
   } catch (error) {
-    console.error("Erro Saque EvoPay:", error.response?.data || error.message);
     return { statusCode: error.response?.status || 500, headers, body: JSON.stringify({ error: error.response?.data?.message || 'Falha ao processar saque', details: error.message }) };
   }
 };
