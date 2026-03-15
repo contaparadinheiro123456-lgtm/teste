@@ -8,29 +8,16 @@ import { TrendingUp, Users, Wallet } from 'lucide-react';
 export default function HomePage() {
   const { user, token } = useAuth();
   const [stats, setStats] = useState({ todayEarnings: 0, newInvites: 0 });
-  const [currentBalance, setCurrentBalance] = useState(0); // Estado para o saldo vivo
   const [loading, setLoading] = useState(true);
 
-  // Efeito para carregar os dados ao abrir e atualizar periodicamente
   useEffect(() => {
-    if (user?.uid) {
-      fetchStats(); // Carrega imediatamente
-
-      // Configura a atualização automática a cada 15 segundos
-      const interval = setInterval(() => {
-        fetchStats();
-      }, 15000);
-
-      return () => clearInterval(interval); // Limpa ao sair da tela
-    }
-  }, [user]);
+    fetchStats();
+  }, []);
 
   const fetchStats = async () => {
-    if (!user?.uid) return;
-
     try {
-      // Enviando o userId na URL para corrigir o erro 400 visto no console
-      const response = await fetch(`/.netlify/functions/stats-today?userId=${user.uid}`, {
+      // Endpoint corrigido para o padrão do Netlify Functions
+      const response = await fetch('/.netlify/functions/stats-today', {
         headers: { 
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -39,25 +26,20 @@ export default function HomePage() {
 
       if (response.ok) {
         const data = await response.json();
-        
-        // Atualiza os ganhos e convidados
+        // Garante que o estado receba os dados ou mantenha os zeros caso o backend mande vazio
         setStats({
           todayEarnings: data.todayEarnings || 0,
           newInvites: data.newInvites || 0
         });
-
-        // Se o seu backend também retornar o saldo atualizado, usamos ele aqui
-        if (data.balance !== undefined) {
-          setCurrentBalance(data.balance);
-        } else {
-          // Caso contrário, usamos o saldo do contexto de autenticação
-          setCurrentBalance(Number(user?.balance) || 0);
-        }
       } else {
+        // Se a resposta não for 200 OK, define como 0 e loga o erro sem quebrar o app
         console.error('Falha ao buscar estatísticas. Status:', response.status);
+        setStats({ todayEarnings: 0, newInvites: 0 });
       }
     } catch (err) {
+      // Se der erro de rede, CORS ou falha de parse (como o Unexpected token <), cai aqui e zera
       console.error('Error fetching stats:', err);
+      setStats({ todayEarnings: 0, newInvites: 0 });
     } finally {
       setLoading(false);
     }
@@ -69,7 +51,7 @@ export default function HomePage() {
 
   return (
     <div className="space-y-6 pb-6 animate-fade-in">
-      {/* Header com Saudação */}
+      {/* Welcome Header */}
       <div className="flex items-center justify-between animate-slide-down">
         <div>
           <p className="text-gray-400 text-sm">Bem-vindo de volta</p>
@@ -82,7 +64,7 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Cards de Ganhos e Convidados */}
+      {/* Stats Cards */}
       <div className="grid grid-cols-2 gap-3">
         <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#1a1a1a] animate-fade-in">
           <CardContent className="pt-4">
@@ -111,7 +93,7 @@ export default function HomePage() {
         </Card>
       </div>
 
-      {/* Card de Saldo Atualizado */}
+      {/* Balance Card */}
       <Card className="bg-[#111111]/80 backdrop-blur-sm border-[#22c55e]/30 animate-fade-in">
         <CardContent className="pt-5 pb-5">
           <div className="flex items-center gap-2 mb-2">
@@ -119,7 +101,7 @@ export default function HomePage() {
             <span className="text-gray-400 text-sm">Saldo Disponível</span>
           </div>
           <p className="text-3xl font-extrabold text-white mb-3">
-            R$ {currentBalance.toFixed(2)}
+            R$ {(Number(user?.balance) || 0).toFixed(2)}
           </p>
           <div className="pt-3 border-t border-[#1a1a1a]">
             <div className="flex justify-between text-sm">
@@ -140,7 +122,7 @@ export default function HomePage() {
         </CardContent>
       </Card>
 
-      {/* Roleta */}
+      {/* Roulette */}
       <div className="animate-fade-in">
         <Roulette onSpinComplete={fetchStats} />
       </div>
