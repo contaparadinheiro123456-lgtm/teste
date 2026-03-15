@@ -24,7 +24,7 @@ exports.handler = async (event) => {
     startOfDay.setHours(0, 0, 0, 0);
     const startTimestamp = admin.firestore.Timestamp.fromDate(startOfDay);
 
-    // 1. Buscar Transações
+    // 1. Ganhos de Hoje (Soma depósitos, comissões e indicações)
     const statsQuery = await db.collection('users').doc(userId)
       .collection('transactions')
       .where('createdAt', '>=', startTimestamp)
@@ -34,14 +34,14 @@ exports.handler = async (event) => {
     let todayEarnings = 0;
     statsQuery.forEach(doc => {
       const data = doc.data();
-      // CORREÇÃO: Adicionado 'indication' e 'referral' para somar as comissões de convite
-      const tiposGanhos = ['deposit', 'commission', 'indication', 'referral'];
-      if (tiposGanhos.includes(data.type)) {
+      // Incluímos 'indication' para pegar os R$ 3,00 que aparecem no seu print
+      const tiposValidos = ['deposit', 'commission', 'indication', 'referral'];
+      if (tiposValidos.includes(data.type)) {
         todayEarnings += Number(data.amount || 0);
       }
     });
 
-    // 2. Buscar Novos Convites (quem se cadastrou hoje com seu link)
+    // 2. Convidados de Hoje
     const invitesQuery = await db.collection('users')
       .where('referredBy', '==', userId)
       .where('createdAt', '>=', startTimestamp)
