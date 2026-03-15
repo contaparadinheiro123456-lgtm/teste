@@ -15,14 +15,11 @@ export default function HomePage() {
   }, []);
 
 const fetchStats = async () => {
-  try {
-    // Pegamos o ID do usuário que já existe no seu AuthContext
-    const userId = user?.uid || user?.id; 
-    
-    if (!userId) return; // Se não tiver ID, nem tenta chamar
+  if (!user?.uid) return; // Garante que temos o ID do usuário
 
-    // CORREÇÃO: Adicionado o ?userId= na URL
-    const response = await fetch(`/.netlify/functions/stats-today?userId=${userId}`, {
+  try {
+    // Agora enviando o userId na URL para evitar o erro 400
+    const response = await fetch(`/.netlify/functions/stats-today?userId=${user.uid}`, {
       headers: { 
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
@@ -35,6 +32,14 @@ const fetchStats = async () => {
         todayEarnings: data.todayEarnings || 0,
         newInvites: data.newInvites || 0
       });
+      
+      // DICA: Se quiser atualizar o saldo de R$ 5909.00 aqui também,
+      // precisaremos adicionar o campo 'balance' na resposta do backend.
+    }
+  } catch (err) {
+    console.error('Erro ao buscar stats:', err);
+  }
+};
     } else {
       console.error('Erro na API:', response.status);
       setStats({ todayEarnings: 0, newInvites: 0 });
